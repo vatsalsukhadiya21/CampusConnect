@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
+import X from "lucide-react/dist/esm/icons/x";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { cn } from "@/lib/utils";
@@ -62,7 +62,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      "fixed inset-0 z-[70] bg-black/80 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className,
     )}
     {...props}
@@ -73,19 +73,20 @@ const DialogOverlay = React.forwardRef<
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm"
+      className="fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm"
     />
   </DialogPrimitive.Overlay>
 ));
 import { cva, type VariantProps } from "class-variance-authority";
 
 const dialogContentVariants = cva(
-  "fixed z-50 grid w-full gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg bottom-0 left-0 right-0 max-sm:rounded-t-2xl max-sm:rounded-b-none max-sm:data-[state=open]:animate-in max-sm:data-[state=closed]:animate-out max-sm:data-[state=closed]:slide-out-to-bottom max-sm:data-[state=open]:slide-in-from-bottom max-sm:data-[state=closed]:fade-out-0 max-sm:data-[state=open]:fade-in-0 sm:left-[50%] sm:top-[50%] sm:max-w-lg sm:translate-x-[-50%] sm:translate-y-[-50%] sm:data-[state=open]:animate-in sm:data-[state=closed]:animate-out sm:data-[state=closed]:fade-out-0 sm:data-[state=open]:fade-in-0 sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:zoom-in-95",
+  "fixed z-[70] grid w-full gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg bottom-0 left-0 right-0 max-sm:rounded-t-2xl max-sm:rounded-b-none max-sm:data-[state=open]:animate-in max-sm:data-[state=closed]:animate-out max-sm:data-[state=closed]:slide-out-to-bottom max-sm:data-[state=open]:slide-in-from-bottom max-sm:data-[state=closed]:fade-out-0 max-sm:data-[state=open]:fade-in-0 sm:left-[50%] sm:top-[50%] sm:max-w-lg sm:translate-x-[-50%] sm:translate-y-[-50%] sm:data-[state=open]:animate-in sm:data-[state=closed]:animate-out sm:data-[state=closed]:fade-out-0 sm:data-[state=open]:fade-in-0 sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:zoom-in-95",
   {
     variants: {
       variant: {
         default: "border bg-background text-foreground",
-        brutalist: "border-2 border-black bg-white text-black dark:bg-black dark:text-cream shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
+        brutalist:
+          "border-2 border-black bg-white text-black dark:bg-black dark:text-cream shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
         sheet: "border-l border-gray-200 bg-white text-gray-900 rounded-none h-full",
       },
     },
@@ -96,7 +97,8 @@ const dialogContentVariants = cva(
 );
 
 export interface DialogContentProps
-  extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>,
+  extends
+    React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>,
     VariantProps<typeof dialogContentVariants> {}
 
 // --- Content (the modal panel) ---
@@ -108,6 +110,14 @@ const DialogContent = React.forwardRef<
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      onOpenAutoFocus={(e) => {
+        // Move focus to the modal heading/title when opened for screen reader support
+        const target = (e.currentTarget as HTMLElement).querySelector("[data-dialog-title]");
+        if (target) {
+          e.preventDefault();
+          (target as HTMLElement).focus();
+        }
+      }}
       className={cn(dialogContentVariants({ variant }), className)}
       {...props}
     >
@@ -140,7 +150,12 @@ const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn("text-lg font-semibold leading-none tracking-tight", className)}
+    data-dialog-title="true"
+    tabIndex={-1}
+    className={cn(
+      "text-lg font-semibold leading-none tracking-tight focus:outline-none",
+      className,
+    )}
     {...props}
   />
 ));

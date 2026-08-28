@@ -1,7 +1,16 @@
 import React, { useState, useCallback, useMemo } from "react";
-import { format, addHours, differenceInHours, isSameDay, startOfWeek, addDays } from "date-fns";
+import format from "date-fns/format";
+import addHours from "date-fns/addHours";
+import differenceInHours from "date-fns/differenceInHours";
+import isSameDay from "date-fns/isSameDay";
+import startOfWeek from "date-fns/startOfWeek";
+import addDays from "date-fns/addDays";
 import { cn } from "../../lib/utils";
-import { Calendar, Clock, ChevronLeft, ChevronRight, AlertCircle } from "lucide-react";
+import Calendar from "lucide-react/dist/esm/icons/calendar";
+import Clock from "lucide-react/dist/esm/icons/clock";
+import ChevronLeft from "lucide-react/dist/esm/icons/chevron-left";
+import ChevronRight from "lucide-react/dist/esm/icons/chevron-right";
+import AlertCircle from "lucide-react/dist/esm/icons/alert-circle";
 import { Button } from "../ui/button";
 
 export interface ScheduledEvent {

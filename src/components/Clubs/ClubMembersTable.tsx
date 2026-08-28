@@ -5,10 +5,10 @@ import {
   getPaginationRowModel,
   useReactTable,
   type ColumnDef,
-  type Row,
 } from "@tanstack/react-table";
 import { CheckCircle, ShieldCheck, XCircle } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { MemberIdentity } from "./MemberIdentity";
 import { MemberContextMenu } from "./MemberContextMenu";
 import { SearchInput } from "@/components/ui/SearchInput";
 import { EmptyState } from "@/components/EmptyState";
@@ -20,6 +20,8 @@ import { EmptyState } from "@/components/EmptyState";
 export interface ClubMemberRow {
   id: string;
   role: string;
+  role_id: string | null;
+  roleLevel: number;
   status: string;
   user_id: string;
   fullName: string;
@@ -36,18 +38,28 @@ interface RawProfile {
 interface RawClubMember {
   id: string;
   role: string;
+  role_id: string | null;
   status: string;
   user_id: string;
+  club_roles?: { id: string; title: string; permissions_level: number }[] | null;
   profiles: RawProfile | RawProfile[] | null;
+}
+
+export interface ClubRole {
+  id: string;
+  title: string;
+  permissions_level: number;
 }
 
 interface ClubMembersTableProps {
   members: RawClubMember[];
   currentUserId?: string;
+  clubRoles?: ClubRole[];
   isMutating?: boolean;
   onApprove: (memberId: string) => void;
   onReject: (memberId: string) => void;
-  onToggleRole: (memberId: string, currentRole: string) => void;
+  onToggleRole?: (memberId: string, currentRole: string) => void;
+  onAssignRole?: (memberId: string, roleId: string) => void;
 }
 
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
@@ -65,9 +77,12 @@ function getInitials(name: string) {
 
 function normalizeMember(m: RawClubMember): ClubMemberRow {
   const profile = Array.isArray(m.profiles) ? m.profiles[0] : m.profiles;
+  const dynamicRole = Array.isArray(m.club_roles) ? m.club_roles[0] : m.club_roles;
   return {
     id: m.id,
-    role: m.role,
+    role: dynamicRole?.title ?? m.role,
+    role_id: m.role_id,
+    roleLevel: dynamicRole?.permissions_level ?? legacyRoleToLevel(m.role),
     status: m.status,
     user_id: m.user_id,
     fullName: profile?.full_name || "Unknown User",
@@ -76,15 +91,22 @@ function normalizeMember(m: RawClubMember): ClubMemberRow {
   };
 }
 
+function legacyRoleToLevel(role: string): number {
+  switch (role) {
+    case "admin":
+    case "owner":
+      return 100;
+    case "organizer":
+      return 40;
+    default:
+      return 10;
+  }
+}
+
 const statusStyles: Record<string, string> = {
   pending: "bg-peach",
   approved: "bg-lime",
   rejected: "bg-red-300",
-};
-
-const roleStyles: Record<string, string> = {
-  admin: "bg-sky",
-  member: "bg-lavender",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -99,12 +121,12 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function RoleBadge({ role }: { role: string }) {
+function RoleBadge({ role, roleLevel }: { role: string; roleLevel: number }) {
+  const styles =
+    roleLevel >= 100 ? "bg-sky" : roleLevel >= 40 ? "bg-lavender" : "bg-brand-blue-light";
   return (
     <span
-      className={`neu-border inline-block px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase leading-none ${
-        roleStyles[role] || "bg-gray-200"
-      }`}
+      className={`neu-border inline-block px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase leading-none ${styles}`}
     >
       {role}
     </span>
@@ -139,17 +161,21 @@ function MemberIdentity({ member }: { member: ClubMemberRow }) {
 function MemberActions({
   member,
   currentUserId,
+  clubRoles,
   isMutating,
   onApprove,
   onReject,
   onToggleRole,
+  onAssignRole,
 }: {
   member: ClubMemberRow;
   currentUserId?: string;
+  clubRoles?: ClubRole[];
   isMutating?: boolean;
   onApprove: (memberId: string) => void;
   onReject: (memberId: string) => void;
-  onToggleRole: (memberId: string, currentRole: string) => void;
+  onToggleRole?: (memberId: string, currentRole: string) => void;
+  onAssignRole?: (memberId: string, roleId: string) => void;
 }) {
   if (member.status === "pending") {
     return (
@@ -174,21 +200,43 @@ function MemberActions({
     );
   }
 
-  if (member.status === "approved" && member.user_id !== currentUserId) {
+  if (member.status === "approved" && member.user_id !== currentUserId && onAssignRole) {
     return (
-      <div className="flex items-center gap-2">
-        <select
-          value={member.role}
-          disabled={isMutating}
-          onChange={(e) => onToggleRole(member.id, e.target.value)}
-          className="neu-border bg-white px-2 py-1 font-mono text-xs font-bold uppercase cursor-pointer disabled:opacity-50"
-          aria-label={`Change role for ${member.fullName}`}
-        >
-          <option value="member">Member</option>
-          <option value="moderator">Moderator</option>
-          <option value="admin">Admin</option>
-        </select>
-      </div>
+      <select
+        value={member.role_id ?? ""}
+        disabled={isMutating}
+        onChange={(e) => {
+          if (e.target.value) onAssignRole(member.id, e.target.value);
+        }}
+        className="neu-border bg-white px-1 py-1 font-mono text-xs"
+        aria-label={`Assign role for ${member.fullName}`}
+      >
+        <option value="" disabled>
+          Role…
+        </option>
+        {(clubRoles ?? [])
+          .slice()
+          .sort((a, b) => b.permissions_level - a.permissions_level)
+          .map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.title}
+            </option>
+          ))}
+      </select>
+    );
+  }
+
+  if (member.status === "approved" && member.user_id !== currentUserId && onToggleRole) {
+    return (
+      <button
+        onClick={() => onToggleRole(member.id, member.role)}
+        disabled={isMutating}
+        className="neu-border bg-blue-200 p-2 text-xs font-bold uppercase hover:bg-blue-300 disabled:opacity-50"
+        title="Toggle Role"
+        aria-label={`Toggle role for ${member.fullName}`}
+      >
+        <ShieldCheck size={16} />
+      </button>
     );
   }
 
@@ -202,10 +250,12 @@ function MemberActions({
 export function ClubMembersTable({
   members,
   currentUserId,
+  clubRoles,
   isMutating,
   onApprove,
   onReject,
   onToggleRole,
+  onAssignRole,
 }: ClubMembersTableProps) {
   const [globalFilter, setGlobalFilter] = useState("");
 
@@ -230,10 +280,10 @@ export function ClubMembersTable({
     columns,
     state: { globalFilter },
     onGlobalFilterChange: setGlobalFilter,
-    globalFilterFn: (row: Row<ClubMemberRow>, _columnId: string, filterValue: string) => {
+    globalFilterFn: (row, _columnId, filterValue) => {
       const query = String(filterValue).toLowerCase().trim();
       if (!query) return true;
-      const member = row.original;
+      const member = row.original as ClubMemberRow;
       return (
         member.fullName.toLowerCase().includes(query) ||
         member.handle.toLowerCase().includes(query) ||
@@ -302,7 +352,7 @@ export function ClubMembersTable({
                           <MemberIdentity member={member} />
                         </td>
                         <td className="p-3">
-                          <RoleBadge role={member.role} />
+                          <RoleBadge role={member.role} roleLevel={member.roleLevel} />
                         </td>
                         <td className="p-3">
                           <StatusBadge status={member.status} />
@@ -312,10 +362,12 @@ export function ClubMembersTable({
                             <MemberActions
                               member={member}
                               currentUserId={currentUserId}
+                              clubRoles={clubRoles}
                               isMutating={isMutating}
                               onApprove={onApprove}
                               onReject={onReject}
                               onToggleRole={onToggleRole}
+                              onAssignRole={onAssignRole}
                             />
                           </div>
                         </td>
@@ -342,16 +394,18 @@ export function ClubMembersTable({
                     <MemberIdentity member={member} />
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex gap-2">
-                        <RoleBadge role={member.role} />
+                        <RoleBadge role={member.role} roleLevel={member.roleLevel} />
                         <StatusBadge status={member.status} />
                       </div>
                       <MemberActions
                         member={member}
                         currentUserId={currentUserId}
+                        clubRoles={clubRoles}
                         isMutating={isMutating}
                         onApprove={onApprove}
                         onReject={onReject}
                         onToggleRole={onToggleRole}
+                        onAssignRole={onAssignRole}
                       />
                     </div>
                   </div>

@@ -1,20 +1,18 @@
 import React, { useEffect, useState, useRef } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import {
-  Bell,
-  CheckCheck,
-  Loader2,
-  Settings,
-  ExternalLink,
-  Calendar,
-  Building,
-  MessageSquare,
-  Shield,
-  AtSign,
-} from "lucide-react";
+import Bell from "lucide-react/dist/esm/icons/bell";
+import CheckCheck from "lucide-react/dist/esm/icons/check-check";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2";
+import Settings from "lucide-react/dist/esm/icons/settings";
+import ExternalLink from "lucide-react/dist/esm/icons/external-link";
+import Calendar from "lucide-react/dist/esm/icons/calendar";
+import Building from "lucide-react/dist/esm/icons/building";
+import MessageSquare from "lucide-react/dist/esm/icons/message-square";
+import Shield from "lucide-react/dist/esm/icons/shield";
+import AtSign from "lucide-react/dist/esm/icons/at-sign";
 import { createClient } from "@/lib/supabase/client";
 import { Link } from "react-router-dom";
-import { format } from "date-fns";
+import { formatTime } from "@/lib/dateFormatter";
 import { EmptyState } from "@/components/EmptyState";
 import { useGraphQLSubscription } from "@/hooks/useGraphQLSubscription";
 
@@ -225,7 +223,7 @@ export function NotificationLiveFeedWidget() {
                         {n.message}
                       </p>
                       <span className="block font-mono text-[9px] text-gray-400 mt-1">
-                        {format(new Date(n.created_at), "h:mm a")}
+                        {formatTime(n.created_at)}
                       </span>
                     </div>
                   </div>

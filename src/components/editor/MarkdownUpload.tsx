@@ -7,12 +7,14 @@
 
 import * as React from "react";
 import { useState, useRef } from "react";
-import { Upload, FileText, AlertCircle, CheckCircle } from "lucide-react";
+import Upload from "lucide-react/dist/esm/icons/upload";
+import FileText from "lucide-react/dist/esm/icons/file-text";
+import AlertCircle from "lucide-react/dist/esm/icons/alert-circle";
+import CheckCircle from "lucide-react/dist/esm/icons/check-circle";
 import { parseMarkdownToTiptap } from "../../lib/tiptap/markdown-parser";
 import { Progress } from "@/components/ui/progress";
 
 interface MarkdownUploadProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onContentLoaded: (jsonContent: Record<string, any>) => void;
 }
 

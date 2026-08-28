@@ -1,19 +1,30 @@
-// Removed SiteShell import
-import { useQuery, useMutation } from "@/hooks/useReactQueryReplacement";
+import { AnimatePresence, motion } from "framer-motion";
+import { useQuery, useMutation, useQueryClient } from "@/hooks/useReactQueryReplacement";
+import { useFederatedEvents } from "@/hooks/useFederatedEvents";
 import { createClient } from "@/lib/supabase/client";
 import { useEmailVerification } from "@/hooks/useEmailVerification";
-import { useEffect, useState, useRef, lazy, Suspense, useCallback } from "react";
+import { useEffect, useState, useRef, lazy, Suspense, useCallback, useMemo } from "react";
 import { User } from "@supabase/supabase-js";
 import { EventCard } from "@/components/EventCard";
 import { CreateEventDialog } from "@/components/CreateEventDialog";
 import { PullToRefresh } from "@/components/PullToRefresh";
 import { toast } from "sonner";
 import { EventCardSkeleton } from "@/components/EventCardSkeleton";
-import { Search, Loader2, Calendar as CalendarIcon, Download, MapPin } from "lucide-react";
+import Search from "lucide-react/dist/esm/icons/search";
+import Loader2 from "lucide-react/dist/esm/icons/loader-2";
+import CalendarIcon from "lucide-react/dist/esm/icons/calendar";
+import Download from "lucide-react/dist/esm/icons/download";
+import MapPin from "lucide-react/dist/esm/icons/map-pin";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
-import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth, addMonths } from "date-fns";
+import format from "date-fns/format";
+import startOfWeek from "date-fns/startOfWeek";
+import endOfWeek from "date-fns/endOfWeek";
+import startOfMonth from "date-fns/startOfMonth";
+import endOfMonth from "date-fns/endOfMonth";
+import addMonths from "date-fns/addMonths";
 import { matchesDateFilter } from "@/lib/eventUtils";
+import { getRsvpIdempotencyKey, clearRsvpIdempotencyKey } from "@/lib/rsvpIdempotency";
 import { getMultiIcsContent } from "@/lib/utils";
 import { Link } from "react-router-dom";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -42,16 +53,23 @@ export interface EventItem {
   end_date?: string | null;
   location: string | null;
   banner_url?: string | null;
+  announce_date?: string | null;
   created_at?: string | null;
-  clubs: { name: string } | { name: string }[] | null;
+  clubs:
+    | { name: string; average_lead_time_days?: number | null }
+    | { name: string; average_lead_time_days?: number | null }[]
+    | null;
   event_rsvps: { id: string; user_id: string }[] | null;
   saved_events: { id: string; user_id: string }[] | null;
   rsvp_count?: number;
   saved_count?: number;
   max_attendees?: number | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 import EventsCalendar from "@/components/events/EventsCalendar";
+import EventMap from "@/components/events/EventMap";
 import { useParams } from "react-router-dom";
 
 // Helper: Check if two event date ranges overlap
@@ -72,12 +90,14 @@ function eventsOverlap(
 export default function EventsList() {
   const supabase = createClient();
   const { eventId } = useParams();
+  const queryClient = useQueryClient();
+  const { remoteEvents, loading: loadingRemote } = useFederatedEvents();
 
   const [user, setUser] = useState<User | null>(null);
   const emailVerified = useEmailVerification();
   const [activeCategories, setActiveCategories] = useState<string[]>([]);
   const [filter, setFilter] = useState<string>("All");
-  const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
+  const [viewMode, setViewMode] = useState<"list" | "calendar" | "map">("list");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [sortLoaded, setSortLoaded] = useState(false);
   const [hidePastEvents, setHidePastEvents] = useState(false);
@@ -151,7 +171,7 @@ export default function EventsList() {
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      setSearchQuery(searchInput);
+      setSearchQuery(searchInput.trim());
     }, 300);
     return () => clearTimeout(timer);
   }, [searchInput]);
@@ -181,16 +201,11 @@ export default function EventsList() {
       let fetchedCount: number | null = null;
 
       if (searchQuery.trim()) {
-        const { data, error } = await supabase
-          .rpc("search_events_advanced", { query_string: searchQuery })
-          .select(
-            `
-            id, title, description, event_date, start_date, end_date, location, banner_url, created_at, max_attendees,
-            clubs (name),
-            event_rsvps(count),
-            saved_events(count)
-          `,
-          );
+        const { data, error } = await supabase.functions.invoke("global-search", {
+          body: {
+            query: searchQuery,
+          },
+        });
         if (error) throw error;
         const results = (data || []) as unknown[];
         fetchedData = results;
@@ -200,8 +215,8 @@ export default function EventsList() {
           .from("events")
           .select(
             `
-            id, title, description, event_date, start_date, end_date, location, banner_url, created_at, max_attendees,
-            clubs (name),
+            id, title, description, event_date, start_date, end_date, location, banner_url, created_at, announce_date, max_attendees, latitude, longitude,
+            clubs (name, average_lead_time_days),
             event_rsvps(count),
             saved_events(count)
           `,
@@ -323,7 +338,95 @@ export default function EventsList() {
     },
   });
 
+  const { data: trendingEvents, isLoading: isTrendingLoading } = useQuery({
+    queryKey: ["trendingEvents"],
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke("trending-events");
+        if (error) throw error;
+
+        const uuids = data?.events || [];
+        if (!uuids || uuids.length === 0) return [];
+
+        const { data: eventsData, error: dbError } = await supabase
+          .from("events")
+          .select(
+            `
+            id, title, description, event_date, start_date, end_date, location, banner_url, created_at, max_attendees, latitude, longitude,
+            clubs (name),
+            event_rsvps(count),
+            saved_events(count)
+          `,
+          )
+          .in("id", uuids);
+
+        if (dbError) throw dbError;
+
+        return (eventsData as unknown as EventItem[]).sort((a, b) => {
+          return uuids.indexOf(a.id) - uuids.indexOf(b.id);
+        });
+      } catch (err) {
+        console.error("Failed to load trending events:", err);
+        return [];
+      }
+    },
+  });
+
   const [events, setEvents] = useState<EventItem[]>([]);
+  const { data: remoteRsvps } = useQuery({
+    queryKey: ["remoteRsvps", user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const { data, error } = await supabase
+        .from("remote_event_rsvps")
+        .select("remote_event_id")
+        .eq("user_id", user.id);
+      if (error) return [];
+      return data.map((r) => r.remote_event_id);
+    },
+    enabled: !!user,
+  });
+
+  const allEvents = useMemo(() => {
+    const localEventsMapped = events.map((le) => ({
+      ...le,
+      is_remote: false,
+    }));
+
+    const mappedRemoteEvents = (remoteEvents || []).map((re) => {
+      const hasRsvped = remoteRsvps?.includes(re.id) ?? false;
+      return {
+        id: re.id,
+        title: re.title,
+        description: re.description,
+        event_date: re.start_time,
+        start_date: re.start_time,
+        end_date: re.end_time,
+        location: re.location,
+        banner_url: re.banner_url,
+        created_at: re.created_at,
+        max_attendees: (re.federated_payload?.capacity as number) || null,
+        clubs: { name: `Hosted by ${re.host_institution}` },
+        is_remote: true,
+        host_institution: re.host_institution,
+        origin_server_domain: re.origin_server_domain,
+        origin_event_id: re.origin_event_id,
+        rsvp_count: 0,
+        saved_count: 0,
+        event_rsvps: hasRsvped ? [{ id: "remote-rsvp-id", user_id: user?.id || "" }] : [],
+        saved_events: [],
+      };
+    });
+
+    const combined = [...localEventsMapped, ...mappedRemoteEvents];
+    const seen = new Set();
+    return combined.filter((e) => {
+      if (seen.has(e.id)) return false;
+      seen.add(e.id);
+      return true;
+    });
+  }, [events, remoteEvents, remoteRsvps, user]);
+
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -476,7 +579,7 @@ export default function EventsList() {
     } finally {
       setIsLoadingMore(false);
     }
-  }, [isLoadingMore, hasMore, page, supabase]);
+  }, [isLoadingMore, hasMore, page, supabase, filters, user]);
 
   // Infinite scroll: auto-trigger load when sentinel enters the viewport
   useEffect(() => {
@@ -520,63 +623,53 @@ export default function EventsList() {
     };
   }, [supabase, refetch]);
 
+  // ── Issue #2664: Optimistic UI for RSVP and Bookmark ─────────────
   const toggleRsvp = useMutation({
-    mutationFn: async ({
-      eventId,
-      hasRsvpd,
-      captchaToken,
-    }: {
-      eventId: string;
-      hasRsvpd: boolean;
-      captchaToken?: string;
-    }) => {
+    mutationFn: async ({ eventId, hasRsvpd }: { eventId: string; hasRsvpd: boolean }) => {
       if (!user) throw new Error("Must be logged in");
       if (eventId.startsWith("mock-")) {
         return;
       }
 
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      // Check if it's a remote/federated event in allEvents array
+      const targetEvent = allEvents.find((e) => e.id === eventId);
+      if (targetEvent && 'is_remote' in targetEvent && targetEvent.is_remote) {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const { error } = await supabase.functions.invoke("proxy-rsvp", {
+          body: { eventId, hasRsvpd, action: "toggle" },
+          headers: {
+            Authorization: `Bearer ${sessionData.session?.access_token}`,
+          },
+        });
+        if (error) throw error;
+        return;
+      }
+
+      const idempotencyKey = getRsvpIdempotencyKey(eventId);
+      const { data: sessionData } = await supabase.auth.getSession();
 
       const { error } = await supabase.functions.invoke("toggle-rsvp", {
         body: {
           eventId,
           hasRsvpd,
-          captchaToken,
         },
         headers: {
-          Authorization: `Bearer ${session?.access_token}`,
+          Authorization: `Bearer ${sessionData.session?.access_token}`,
+          "Idempotency-Key": idempotencyKey,
         },
       });
 
       if (error) {
         throw error;
       }
+      clearRsvpIdempotencyKey(eventId);
     },
     onSuccess: async (_data, variables) => {
       toast.success(
         variables.hasRsvpd ? "RSVP cancelled successfully!" : "RSVP registered successfully!",
       );
-      if (!variables.hasRsvpd && user && !variables.eventId.startsWith("mock-")) {
-        const { count } = await supabase
-          .from("event_rsvps")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", user.id);
-        if (count === 1) {
-          setShowConfetti(true);
-
-          if (confettiTimeoutRef.current) {
-            clearTimeout(confettiTimeoutRef.current);
-          }
-
-          confettiTimeoutRef.current = setTimeout(() => {
-            setShowConfetti(false);
-            confettiTimeoutRef.current = null;
-          }, 5000);
-        }
-      }
       refetch();
+      queryClient.invalidateQueries({ queryKey: ["remoteRsvps"] });
     },
     onError: () => {
       toast.error("Failed to update RSVP");
@@ -601,18 +694,23 @@ export default function EventsList() {
     },
     onSuccess: (_data, variables) => {
       toast.success(variables.isSaved ? "Removed from saved events!" : "Saved to bookmarks!");
-      refetch();
     },
-    onError: () => {
-      toast.error("Failed to update bookmark");
+    onSettled: () => {
+      refetch();
     },
   });
 
+  // ── Issue #2664: Debounce / disable buttons during pending sync ──
+  // The handlers now just call mutateAsync — the optimistic update and
+  // rollback happen inside the mutation lifecycle hooks above.
   const handleRsvpToggle = async (eventId: string, hasRsvpd: boolean) => {
     if (!emailVerified && !hasRsvpd) {
       toast.error("Please verify your email to RSVP");
       return;
     }
+    // Prevent rapid double-clicks (race condition guard).
+    if (toggleRsvp.isPending) return;
+
     // Overlap warning: only check when joining (not leaving), and only if we
     // have start/end times for the target event.
     if (!hasRsvpd && user) {
@@ -639,35 +737,11 @@ export default function EventsList() {
       }
     }
 
-    const originalEvents = [...events];
-    setEvents((prevEvents) =>
-      prevEvents.map((e) => {
-        if (e.id === eventId) {
-          const rsvpsList = Array.isArray(e.event_rsvps) ? e.event_rsvps : [];
-          if (hasRsvpd) {
-            return {
-              ...e,
-              event_rsvps: rsvpsList.filter((r) => r.user_id !== (user?.id || "")),
-              rsvp_count: Math.max(0, (e.rsvp_count ?? 0) - 1),
-            };
-          } else {
-            return {
-              ...e,
-              event_rsvps: [...rsvpsList, { id: "temp-rsvp-id", user_id: user?.id || "" }],
-              rsvp_count: (e.rsvp_count ?? 0) + 1,
-            };
-          }
-        }
-        return e;
-      }),
-    );
-
     try {
       await toggleRsvp.mutateAsync({ eventId, hasRsvpd });
 
       // Show confetti only when successfully RSVPing (not when cancelling)
       if (!hasRsvpd) {
-        // @ts-expect-error - canvas-confetti lacks type declarations
         import("canvas-confetti")
           .then((m) => {
             const fireConfetti = m.default || m;
@@ -680,41 +754,20 @@ export default function EventsList() {
           .catch(() => {});
       }
     } catch {
-      setEvents(originalEvents);
+      // Rollback is handled by onError in the mutation.
     }
   };
 
   const handleBookmarkToggle = async (eventId: string, isSaved: boolean) => {
-    const originalEvents = [...events];
-    setEvents((prevEvents) =>
-      prevEvents.map((e) => {
-        if (e.id === eventId) {
-          const savedList = Array.isArray(e.saved_events) ? e.saved_events : [];
-          if (isSaved) {
-            return {
-              ...e,
-              saved_events: savedList.filter((s) => s.user_id !== (user?.id || "")),
-              saved_count: Math.max(0, (e.saved_count ?? 0) - 1),
-            };
-          } else {
-            return {
-              ...e,
-              saved_events: [...savedList, { id: "temp-id", user_id: user?.id || "" }],
-              saved_count: (e.saved_count ?? 0) + 1,
-            };
-          }
-        }
-        return e;
-      }),
-    );
+    // Prevent rapid double-clicks (race condition guard).
+    if (toggleBookmark.isPending) return;
 
     try {
       await toggleBookmark.mutateAsync({ eventId, isSaved });
     } catch {
-      setEvents(originalEvents);
+      // Rollback is handled by onError in the mutation.
     }
   };
-
   const filterColors: Record<string, string> = {
     All: "bg-black text-cream",
     Workshop: "bg-lime text-black",
@@ -723,7 +776,7 @@ export default function EventsList() {
     Social: "bg-peach text-black",
   };
 
-  const filteredEvents = events
+  const filteredEvents = allEvents
     .filter((event) => {
       const text =
         `${event.title} ${event.description ?? ""} ${event.location ?? ""}`.toLowerCase();
@@ -1040,13 +1093,21 @@ export default function EventsList() {
                         >
                           Calendar
                         </button>
-                        <Link
-                          to="/events/map"
-                          className="flex items-center gap-1 px-3 py-1.5 font-mono text-xs font-bold uppercase transition-colors bg-white text-black hover:bg-cream cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black"
+                        <button
+                          type="button"
+                          onClick={() => setViewMode("map")}
+                          aria-pressed={viewMode === "map"}
+                          className={`flex items-center gap-1 px-3 py-1.5 font-mono text-xs font-bold uppercase transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black ${
+                            viewMode === "map"
+                              ? "bg-black text-cream"
+                              : "bg-white text-black hover:bg-cream"
+                          }`}
                         >
-                          <MapPin className="h-3.5 w-3.5 text-red-500" />
+                          <MapPin
+                            className={`h-3.5 w-3.5 ${viewMode === "map" ? "text-red-400" : "text-red-500"}`}
+                          />
                           Map
-                        </Link>
+                        </button>
                       </div>
 
                       <button
@@ -1075,67 +1136,153 @@ export default function EventsList() {
                   </div>
                 </div>
               </section>
-              <section className="bg-cream px-4 py-12 md:px-6">
-                {viewMode === "list" ? (
+              <section
+                className={`bg-cream px-4 py-12 md:px-6 ${viewMode === "map" ? "h-[80vh] min-h-[600px] flex flex-col" : ""}`}
+              >
+                {viewMode === "map" ? (
+                  <EventMap events={filteredEvents} />
+                ) : viewMode === "list" ? (
                   <>
-                    <div className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3">
-                      {isLoading ? (
-                        Array.from({ length: 6 }).map((_, i) => (
-                          <EventCardSkeleton key={i} index={i} />
-                        ))
-                      ) : sortedEvents.length === 0 && filter !== "All" ? (
-                        <div className="col-span-full mx-auto w-full max-w-md animate-in fade-in-0 zoom-in-95 duration-300">
-                          <EmptyState
-                            illustrationType="no-events"
-                            title={`No ${filter} events found`}
-                            description="Try a different category, or clear the filter to see everything."
-                            action={{
-                              label: "Clear filter",
-                              onClick: () => {
-                                setFilter("All");
-                                setDateFilterType("all");
-                                setSpecificDate(undefined);
-                              },
-                            }}
-                          />
+                    {(isTrendingLoading || (trendingEvents && trendingEvents.length > 0)) &&
+                      filter === "All" &&
+                      !searchQuery && (
+                        <div className="mx-auto max-w-7xl mb-12">
+                          <div className="flex items-center gap-2 mb-6">
+                            <h2 className="text-2xl font-bold font-display">Trending Now</h2>
+                            <span className="text-xl">🔥</span>
+                          </div>
+                          <div className="flex gap-4 overflow-x-auto pb-4 snap-x hide-scrollbar">
+                            {isTrendingLoading
+                              ? Array.from({ length: 4 }).map((_, i) => (
+                                  <div
+                                    key={`trending-skel-${i}`}
+                                    className="min-w-[300px] md:min-w-[350px] snap-start"
+                                  >
+                                    <EventCardSkeleton index={i} />
+                                  </div>
+                                ))
+                              : trendingEvents?.map((e, index) => (
+                                  <div
+                                    key={`trending-${e.id}`}
+                                    className="min-w-[300px] md:min-w-[350px] snap-start"
+                                  >
+                                    <EventCard
+                                      event={e}
+                                      index={index}
+                                      user={user}
+                                      active={e.id === eventId}
+                                      onRsvpToggle={handleRsvpToggle}
+                                      isRsvpPending={toggleRsvp.isPending}
+                                      onBookmarkToggle={handleBookmarkToggle}
+                                      isBookmarkPending={toggleBookmark.isPending}
+                                    />
+                                  </div>
+                                ))}
+                          </div>
                         </div>
-                      ) : sortedEvents.length === 0 ? (
-                        <div className="col-span-full mx-auto max-w-md text-center neu-border bg-white p-8">
-                          <EmptyState
-                            illustrationType="no-results"
-                            title="No events found"
-                            description={`No events matched “${searchQuery}”. Try clearing your filters or searching for another term.`}
-                            action={{
-                              label: "Reset filters",
-                              onClick: () => {
-                                setFilter("All");
-                                setSearchInput("");
-                                setSearchQuery("");
-                                setDateFilterType("all");
-                                setSpecificDate(undefined);
-                              },
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        sortedEvents.map((e, index) => (
-                          <EventCard
-                            key={e.id}
-                            event={e}
-                            index={index}
-                            user={user}
-                            active={e.id === eventId}
-                            onRsvpToggle={(eventId, hasRsvpd) =>
-                              handleRsvpToggle(eventId, hasRsvpd)
-                            }
-                            isRsvpPending={toggleRsvp.isPending}
-                            onBookmarkToggle={(eventId, isSaved) =>
-                              handleBookmarkToggle(eventId, isSaved)
-                            }
-                            isBookmarkPending={toggleBookmark.isPending}
-                          />
-                        ))
                       )}
+
+                    <div className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3">
+                      <AnimatePresence mode="sync">
+                        {isLoading ? (
+                          <motion.div
+                            key="events-loading-skeletons"
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.25, ease: "easeInOut" }}
+                            className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3"
+                          >
+                            {Array.from({ length: 6 }).map((_, i) => (
+                              <EventCardSkeleton key={`events-skeleton-${i}`} index={i} />
+                            ))}
+                          </motion.div>
+                        ) : sortedEvents.length === 0 && filter !== "All" ? (
+                          <motion.div
+                            key="events-empty-filter"
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.25, ease: "easeInOut" }}
+                            className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3"
+                          >
+                            <div className="col-span-full mx-auto w-full max-w-md animate-in fade-in-0 zoom-in-95 duration-300">
+                              <EmptyState
+                                illustrationType="no-events"
+                                title={`No ${filter} events found`}
+                                description="Try a different category, or clear the filter to see everything."
+                                action={{
+                                  label: "Clear filter",
+                                  onClick: () => {
+                                    setFilter("All");
+                                    setDateFilterType("all");
+                                    setSpecificDate(undefined);
+                                  },
+                                }}
+                              />
+                            </div>
+                          </motion.div>
+                        ) : sortedEvents.length === 0 ? (
+                          <motion.div
+                            key="events-empty-results"
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.25, ease: "easeInOut" }}
+                            className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3"
+                          >
+                            <div className="col-span-full mx-auto max-w-md text-center neu-border bg-white p-8">
+                              <EmptyState
+                                illustrationType="no-results"
+                                title="No events found"
+                                description={`No events matched “${searchQuery}”. Try clearing your filters or searching for another term.`}
+                                action={{
+                                  label: "Reset filters",
+                                  onClick: () => {
+                                    setFilter("All");
+                                    setSearchInput("");
+                                    setSearchQuery("");
+                                    setDateFilterType("all");
+                                    setSpecificDate(undefined);
+                                  },
+                                }}
+                              />
+                            </div>
+                          </motion.div>
+                        ) : (
+                          <motion.div
+                            key="events-loaded-grid"
+                            layout
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            transition={{ duration: 0.25, ease: "easeInOut" }}
+                            className="mx-auto grid max-w-7xl gap-6 md:grid-cols-2 lg:grid-cols-3"
+                          >
+                            {sortedEvents.map((e, index) => (
+                              <motion.div key={e.id} layout>
+                                <EventCard
+                                  event={e}
+                                  index={index}
+                                  user={user}
+                                  active={e.id === eventId}
+                                  onRsvpToggle={(eventId, hasRsvpd) =>
+                                    handleRsvpToggle(eventId, hasRsvpd)
+                                  }
+                                  isRsvpPending={toggleRsvp.isPending}
+                                  onBookmarkToggle={(eventId, isSaved) =>
+                                    handleBookmarkToggle(eventId, isSaved)
+                                  }
+                                  isBookmarkPending={toggleBookmark.isPending}
+                                />
+                              </motion.div>
+                            ))}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
 
                     {isLoadingMore && (

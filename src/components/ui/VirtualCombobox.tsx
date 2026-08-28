@@ -1,5 +1,7 @@
 import * as React from "react";
-import { Check, ChevronsUpDown, Search } from "lucide-react";
+import Check from "lucide-react/dist/esm/icons/check";
+import ChevronsUpDown from "lucide-react/dist/esm/icons/chevrons-up-down";
+import Search from "lucide-react/dist/esm/icons/search";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { cn } from "@/lib/utils";
@@ -184,8 +186,9 @@ export function VirtualCombobox({
                       <div className="flex-1 overflow-hidden">
                         {option.render || <span className="truncate">{option.label}</span>}
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

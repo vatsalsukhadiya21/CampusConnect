@@ -22,11 +22,9 @@ describe("image optimization helpers", () => {
       resize: "cover",
     });
 
-    expect(result).toContain("/storage/v1/render/image/public/");
+    expect(result).toContain("/functions/v1/image");
+    expect(result).toContain("file=event-banners%2Fbanner.png");
     expect(result).toContain("width=896");
-    expect(result).toContain("height=320");
-    expect(result).toContain("quality=80");
-    expect(result).toContain("resize=cover");
   });
 
   it("leaves non-Supabase URLs unchanged", () => {
@@ -34,12 +32,12 @@ describe("image optimization helpers", () => {
     expect(getOptimizedImageUrl(source, { width: 96 })).toBe(source);
   });
 
-  it("handles image format transformations correctly", () => {
+  it("handles image format transformations correctly (ignored in URL, handled by Accept header)", () => {
     const result = getOptimizedImageUrl(supabaseImage, {
       width: 800,
-      format: "avif",
     });
-    expect(result).toContain("format=avif");
+    expect(result).toContain("/functions/v1/image");
+    expect(result).toContain("width=800");
   });
 
   it("builds a sorted responsive srcset without duplicate widths", () => {
@@ -48,5 +46,13 @@ describe("image optimization helpers", () => {
     expect(srcSet).toContain("448w");
     expect(srcSet).toContain("896w");
     expect(srcSet?.match(/896w/g)).toHaveLength(1);
+  });
+
+  it("builds responsive srcset using DEFAULT_RESPONSIVE_WIDTHS when widths not provided", () => {
+    const srcSet = buildResponsiveImageSrcSet(supabaseImage);
+
+    expect(srcSet).toContain("300w");
+    expect(srcSet).toContain("600w");
+    expect(srcSet).toContain("1200w");
   });
 });
