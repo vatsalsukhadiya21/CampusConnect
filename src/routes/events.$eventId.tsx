@@ -149,6 +149,15 @@ import { isValidBlurhash, DEFAULT_FALLBACK_BLURHASH } from "@/lib/blurhashUtils"
 import { EventDescriptionTranslation } from "@/components/events/EventDescriptionTranslation";
 import { useDeviceFingerprint } from "@/hooks/useDeviceFingerprint";
 
+const honeypotHashes = [
+  "VIP_ACCESS_2026",
+  "EARLY_BIRD_SECRET",
+  "ADMIN_BYPASS_00",
+  "STAFF_ONLY_99",
+  "SUPER_SECRET_TICKET",
+  "FAKE_HASH_99",
+];
+
 /**
  * Hero banner for the event detail page.
  * Shows a BlurHash placeholder immediately, then cross-fades to the full
@@ -544,6 +553,17 @@ export default function EventDetailsPage() {
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => setUser(user));
   }, [supabase]);
+
+  // Honeypot detection trigger
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const unlockHash = searchParams.get("unlock") || searchParams.get("unlock_hash");
+    if (unlockHash && eventId) {
+      if (!toggleRsvp.isPending) {
+        toggleRsvp.mutate({ eventId, hasRsvpd: false, captchaToken: undefined, unlockHash } as any);
+      }
+    }
+  }, [eventId]);
 
   // Gallery States and Queries
   interface UploadingFile {
@@ -3682,6 +3702,20 @@ export default function EventDetailsPage() {
             />
           </div>
         )}
+
+        {/* Dynamic Early Bird Secret URL Honey Pots (Invisible to normal users) */}
+        <div style={{ display: "none" }} aria-hidden="true">
+          {honeypotHashes.map((hash, i) => (
+            <a
+              key={i}
+              href={`/events/${eventId}?unlock_hash=${hash}`}
+              style={{ display: "none" }}
+              aria-hidden="true"
+            >
+              Early Bird Ticket VIP Access
+            </a>
+          ))}
+        </div>
       </SiteShell>
     </>
   );

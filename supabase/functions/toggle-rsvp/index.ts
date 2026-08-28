@@ -16,6 +16,7 @@ const toggleRsvpSchema = z
     accommodationsRequested: z.string().max(1000).optional().nullable(),
     noMediaConsent: z.boolean().optional().nullable(),
     referredBy: z.string().uuid().optional().nullable(),
+    unlockHash: z.string().optional(),
   })
   .strict();
 
@@ -128,8 +129,27 @@ serve(async (req: Request) => {
   let idempotencyRedisKey: string | null = null;
 
   try {
-    // 1. Pre-auth IP Limiter
-    const ip = getCanonicalClientIp(req) ?? "unknown";
+    // 1. Pre-auth IP Limiter & Blocklist Check
+    const ip = getCanonicalClientIp(req) ?? "127.0.0.1";
+
+    if (redis) {
+      try {
+        const isBlocked = await redis.get(`blocked_ip:${ip}`);
+        if (isBlocked) {
+          return new Response(
+            JSON.stringify({
+              error: "Access denied. Your IP has been blocked due to suspicious activity.",
+            }),
+            {
+              status: 403,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            },
+          );
+        }
+      } catch (err) {
+        console.error("[Blocklist] check failed:", err);
+      }
+    }
 
     let ipLimitRes;
     try {
@@ -199,8 +219,37 @@ serve(async (req: Request) => {
 
     const parsed = await parseJsonBody(toggleRsvpSchema, req);
     if (!parsed.ok) return parsed.response;
-    const { eventId, hasRsvpd, captchaToken, accommodationsRequested, noMediaConsent, referredBy } =
+    const { eventId, hasRsvpd, captchaToken, accommodationsRequested, noMediaConsent, referredBy, unlockHash } =
       parsed.data;
+
+    const HONEYPOT_HASHES = [
+      "VIP_ACCESS_2026",
+      "EARLY_BIRD_SECRET",
+      "ADMIN_BYPASS_00",
+      "STAFF_ONLY_99",
+      "SUPER_SECRET_TICKET",
+      "FAKE_HASH_99",
+    ];
+
+    if (unlockHash && HONEYPOT_HASHES.includes(unlockHash)) {
+      if (redis) {
+        try {
+          // Block for exactly 7 days
+          await redis.set(`blocked_ip:${ip}`, "honeypot", { ex: 7 * 24 * 60 * 60 });
+        } catch (err) {
+          console.error("[Blocklist] set failed:", err);
+        }
+      }
+      return new Response(
+        JSON.stringify({
+          error: "Access denied. Your IP has been blocked due to suspicious activity.",
+        }),
+        {
+          status: 403,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
+    }
 
     const idempotencyKey = req.headers.get("Idempotency-Key");
     idempotencyRedisKey = idempotencyKey ? `rsvp_idempotency_${idempotencyKey}` : null;
